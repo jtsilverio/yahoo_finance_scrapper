@@ -1,0 +1,231 @@
+---
+title: "Raspagem e Visualização do preço de tickers"
+author: "Jefferson Silvério"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(lubridate)
+library(dplyr)
+library(rvest)
+library(knitr)
+library(purrr)
+library(janitor)
+library(tidyr)
+library(kableExtra)
+library(bizdays)
+library(ggplot2)
+library(scales)
+library(sysfonts)
+library(showtext)
+
+knitr::opts_chunk$set(echo = FALSE)
+
+font_add_google("Roboto Condensed", "roboto")
+showtext_auto()
+theme =
+    theme_bw() +
+    theme(text = element_text(size = 14,
+                              family = "roboto")
+          )
+theme_set(theme)
+```
+
+
+## Relatório
+
+Esse relatório foi feito em uma manhã e tarde, com a duração aproximada de 4-5 horas totais. Apesar de ter familiaridade com R ainda não havia feito web scrappig e nem construido um app Shiny. Então, utilizei maior parte do tempo do relatório na busca de materiais e pacotes para realizar o scrapping, bem como das páginas que continham as informações desejadas. Não tive muita dificuldade no scrapping em si, depois de saber quais ferramentas usar e como usá-las. 
+
+Encontrei parte das informações das empresas em uma página da Wikipédia e o restante encontrei no site do Yahoo Finances. O site do yahoo finances também foi simples de raspar já que ele possui uma estrutura da URL bem definida, o que torna a busca dos dados de cada empresa bem simples. 
+
+Um problema que encontrei ao raspar os dados da página do Yahoo, porém, foi que fazendo a raspagem da tabela de fechamento eram devolvidos apenas 100 registros, mesmo aparecendo mais dados no navegador. Assim, optei por usar a URL de download que existe na própria página e que retorna um _csv_ do intervalo de tempo escolhido. Além disso, como a bolsa opera só em dias úteis tive que usar o pacote _bizdays_ para fazer o cálculo da data dos 200 dias úteis anteriores ao dia atual. Com esses dois problemas resolvidos foi possível terminar o relatório em PDF sem mais problemas. 
+
+Infelizmente não consegui terminar o app Shiny a tempo. Assim como o scrapping ainda não tinha experiência com essa ferramenta. Comecei a ler alguns materias da documentação e tutoriais mas não tive tempo para implementar uma solução. Espero que apesar disso o relatório em PDF esteja satisfatório.
+
+Além disso ficou faltando uma limpeza mais minuciosa nos dados da empresa como: separar o nome dos executivos por vígula ou dividir em diferentes colunas de acordo com o cargo e retirar o ano que está entre parêntesis na coluna do número de empregados. Essas tarefas poderiam ser feitas usando R ou aplicando um regex nessas colunas, porém a solução a ser feita (dividir em colunas ou mantér apenas uma) dependeria do uso que se quer dar a esses dados.
+
+Além desse relório também criei um script na pasta _script_ que baixa e salva todos os dados das empresas em um novo csv.
+
+## Tarefas
+
+1. Informações da empresa:
+    a. [x] Nome completo da empresa
+    b. [x] Endereço completo da empresa
+    c. [ ] Telefone
+    d. [x] Setor
+    e. [x] Indústria
+    f. [x] Número de funcionários
+    g. [x] Nome dos principais executivos
+2. [x] Obter dados sobre o valor ajustado de fechamento das ações dos últimos 200 dias de cada ticker
+3. [x] Obter dados sobre o volume de ações negociados nos últimos 200 dias de cada ticker
+4. [x] Processar e manipular os dados obtidos para um formato de dado fácil de ser processado.
+5. [x] Apresentar em um mesmo gráfico, as informações de preço de cada ticker ao longo do tempo, mas somente o último dia de cada mês.
+6. [ ] Implementar uma interface Shiny para apresentar os gráficos criados nas
+tarefas 4 e 5.
+7. [ ] O usuário deve ter a opção de escolher se ele deseja visualizar ou o preço
+das ações ou o volume negociado
+
+## Informações das empresas
+
+```{r}
+companies = c("AAPL", "AMZN", "INTC", "GOOG", "CSCO")
+```
+
+### Listar página da wikipedia dos tickers selecionados 
+
+O melhor caminho para buscar as informações das empresas foi por meio da
+Wikipedia. Assim, iniciando por essa
+[lista](https://en.wikipedia.org/wiki/List_of_S%26P_500_companies#S&P_500_component_stocks)
+das 500 maiores empresas na Wikipedia podemos buscar a página da Wikipedia de cada
+uma das empresas por meio do simbolo
+
+```{r}
+wiki_urls = read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies") %>% 
+    html_element("tbody")
+
+df_companies = wiki_urls %>% 
+    html_table() %>%
+    clean_names() %>% 
+    select(c(1,2,4,5,6)) %>% 
+    mutate(link = paste0("http://en.wikipedia.org",
+                         html_nodes(wiki_urls, "td:nth-child(2) a") %>% 
+                             html_attr("href"))
+           ) %>% 
+    filter(symbol %in% companies)
+
+kable(df_companies,
+      booktabs = TRUE,
+      align = "c") %>% 
+    kable_styling(position = "center",
+                  latex_options = c("hold_position","scale_down")
+                )
+```
+
+### Buscar informações das empresas na Wikipedia
+
+A partir das informações acima e do link das páginas da wikipedia de cada empresa buscamos o restante das informações. Nas páginas da Wikipedia encontramos o número de empregados e os nomes dos principais executivos de cada empresa. Ao final adicionamos essas novas informações à tabela apresentada anteriormente.
+
+```{r}
+get_company_info = function(url){
+    wiki_info = read_html(url) %>% 
+        html_element(".infobox tbody") %>% 
+        html_table() %>% 
+        slice(3:n()) %>% 
+        pivot_wider(names_from = X1, values_from = X2) %>% 
+        clean_names() %>% 
+        select(headquarters, key_people, number_of_employees) %>% 
+        mutate(link = url)
+    
+    return(wiki_info)
+}
+
+wiki_info = purrr::map_df(df_companies$link, get_company_info)
+df_companies = left_join(df_companies, wiki_info, "link") %>% 
+    select(-link) %>% 
+    rename(name = security)
+
+kable(df_companies[1:6],
+      booktabs = TRUE,
+      align = "c") %>% 
+    kable_styling(position = "center",
+                  latex_options = c("hold_position", "scale_down")
+                )
+```
+
+```{r echo=FALSE}
+kable(df_companies[7:8],
+      booktabs = TRUE,
+      align = "c") %>% 
+    kable_styling(position = "center",
+                  latex_options = c("hold_position", "scale_down")
+                )
+```
+ 
+## Busca valores de fechamento
+ 
+Os dados do fechamento dos últimos 200 dias dos tickers é calculado com base no calendário de dias úteis do Brasil. Esses dados são baixados diretamente do site do Yahoo Finances. Um exemplo do formato de dados obtidos é apresentado abaixo. São quatro colunas: symbol (sigla de empresa), data, valor de fechamento e volume de venda no dia.
+
+```{r}
+epoch = ymd_hms('1970-01-01 00:00:00', tz = "UTC")
+today = as_datetime(Sys.Date(), tz = "UTC")
+
+begin = as.numeric(as.duration(as_datetime(bizdays::offset(today, -200, "Brazil/ANBIMA")) - epoch))
+end = as.numeric(as.duration(today - epoch))
+
+# Por scraping estava retornando apenas 100 dias.
+# Poderia ter dividido o scrap em blocos de 100dias mas resolvi ir pelo link de download do csv
+# urls = paste0("https://finance.yahoo.com/quote/", companies, "/history") %>%
+#     paste0("?period1=", begin,"&period2=", end)
+# 
+# get_daily_stock = function(url){
+#     daily_stock = read_html(url) %>%
+#         html_element(xpath = "/html/body/div[1]/div/div/div[1]/div/div[3]/div[1]/div/div[2]/div/div/section/div[2]/table") %>%
+#         html_table()
+#     
+#     return(daily_stock)
+# }
+# get_daily_stock(url[1])
+
+urls = data.frame(
+    symbol = companies,
+    url = paste0("https://query1.finance.yahoo.com/v7/finance/download/", companies) %>%
+    paste0("?period1=", begin,"&period2=", end, "&interval=1d&events=history")
+) 
+    
+
+daily_prices = map_df(1:nrow(urls), function(i){
+                                read.csv(url(urls[i,]$url)) %>% 
+                                    mutate(symbol = urls[i,]$symbol)
+                            }
+                      ) %>% 
+    janitor::clean_names() %>% 
+    select(symbol, date, close, volume) %>% 
+    mutate(date = as_date(date))
+
+kable(head(daily_prices),
+      booktabs = TRUE,
+      align = "c") %>% 
+    kable_styling(position = "center",
+                  latex_options = c("hold_position")
+                )
+```
+ 
+
+## Gráfico de variação do preço de cada ticker
+
+O gráfico abaixo mostra o valor de fechamento dos tickers de cada empresa no último dia de cada mês.
+
+```{r}
+monthly_prices = daily_prices %>% 
+    group_by(symbol, month = month(daily_prices$date)) %>% 
+    slice_tail(n = 1) %>% 
+    ungroup() %>% 
+    select(-month)
+
+ggplot(monthly_prices,
+       aes(date,
+           close,
+           color = symbol)) +
+    geom_line() +
+    geom_point(size = 0.5) +
+    scale_x_date(breaks = "1 month", label = label_date("%b"))+
+    labs(color = "Empresa") +
+    ylab("Preço de fechamento") +
+    xlab("Data") 
+```
+
+## Referências
+
+-   <https://blog.curso-r.com/posts/2018-02-18-fluxo-scraping/>
+-   <https://blog.curso-r.com/posts/2018-03-19-scraper-cetesb/>
+-   <https://www.dataquest.io/blog/web-scraping-in-r-rvest/>
+-   <http://wilsonfreitas.github.io/posts/bizdays-dias-uteis-no-r.html>
+
+
+## Páginas para raspagem
+
+-   <https://en.wikipedia.org/wiki/List_of_S%26P_500_companies>
+-   <https://finance.yahoo.com/quote/>
+
+        
