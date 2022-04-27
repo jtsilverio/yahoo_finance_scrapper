@@ -59,7 +59,7 @@ daily_prices = map_df(1:nrow(urls), function(i){
 
 # Salva dados em um único csv em um formato tidy -------------------------------
 all_data = left_join(daily_prices, df_companies, by = "symbol")
-write.csv(all_data, "Desafio de Programação/dados_fechamento.csv")
+write.csv(all_data, "dados_fechamento.csv")
 
 # Plota fechamento do ultimo dia de cada mês -----------------------------------
 monthly_prices = daily_prices %>% 
